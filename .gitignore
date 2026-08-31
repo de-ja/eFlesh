@@ -177,3 +177,10 @@ cython_debug/
 
 data.json
 temp.json
+# Synthetic sensor harness and generated analysis output
+visualizer/fake_sensor/
+reports/
+
+# Recorded sensor streams
+logs/
+data/
