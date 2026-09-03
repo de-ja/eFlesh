@@ -155,6 +155,90 @@ above.
 
 ---
 
+## Verifying an assembled cuboid
+
+Measured on the first build, 2026-09-02. These are procedures for checking the
+next cuboid, not just facts about this one. All are non-destructive -- the
+magnets are sealed at z = 13.99 and cannot be inspected once printed.
+
+### Channel to chip position
+
+Not documented upstream. Recovered from `visualizer/viz_eflesh.py`'s
+`chip_locations`, which is indexed by channel, and confirmed with a handheld
+magnet on a bare board:
+
+| channel | address | position |
+|---|---|---|
+| 0 | `0x0C` | middle |
+| 1 | `0x11` | left |
+| 2 | `0x12` | right |
+| 3 | `0x13` | top |
+| 4 | `0x10` | bottom |
+
+Channel 0 being the centre is corroborated by the ReSkin BOM: `0x0C` is the only
+`MLX90393ELW-ABA-011-SP`, the other four being `-012-SP`. It also reads the
+lowest resting field, as the centre should.
+
+This is for the **white** address variant. A board reporting
+`0x0C, 0x0D, 0x0E, 0x0F, 0x10` has not been mapped.
+
+### Two checks for alternating polarity
+
+Both work on a sealed part.
+
+1. **Resting field.** With the cuboid seated and nothing touching it, the centre
+   chip should read distinctly the weakest -- four magnets cancelling at the
+   centre. Aligned magnets would instead sum there and make it strongest.
+2. **Flat press.** Press the whole top face with a palm or flat plate and watch
+   the circles in `viz_eflesh.py`. Alternating polarity gives a *mixed* pattern
+   of filled and hollow circles under one uniform press, because filled/hollow
+   encodes the sign of dBz and that sign follows the nearby magnet's direction.
+   Aligned magnets give all-filled or all-hollow.
+
+### Reference profile, build #1
+
+Resting field, cuboid seated, nothing touching:
+
+| chip | position | \|B\| (uT) |
+|---|---|---|
+| 0 | middle | 712 |
+| 1 | left | 1839 |
+| 2 | right | 1911 |
+| 3 | top | 1255 |
+| 4 | bottom | 2230 |
+
+Ambient with no magnets present is 40-100 uT, so these are 20-40x ambient.
+Nothing saturates at `setGainSel(0x1)`, and per-channel noise is ~2.5 uT.
+
+**The arms are not equal, and by symmetry they should be.** A 2x2 alternating
+array is invariant under 90-degree rotation plus a polarity flip, so all four
+edge chips ought to read the same magnitude. The observed spread is 1.8x
+(1255 to 2230). Candidate causes, unresolved: PCB offset from the array centre
+(remember the array sits 2.00 mm -y of the part centre), magnet seating depth
+variation, or unit variation in the magnets or chips. Measure the same profile
+on the next build -- two cuboids is enough to tell a fixed jig error from
+per-part variation.
+
+### Chip rotations
+
+`chip_xy_rotations` in `viz_eflesh.py` maps each chip's in-plane axes into
+screen coordinates. Upstream ships two rows, "black" and "white", with nothing
+saying which applies to a given board. **The black row is correct for this
+build**, verified with a handheld magnet on a bare board:
+
+- held to one side of a chip, the arrow points along the chip-magnet line --
+  the in-plane field of a vertical magnet is radial;
+- directly overhead, the arrow collapses to zero while the circle peaks, since
+  the radial component is proportional to lateral offset;
+- all five chips behave identically.
+
+The white row reads 90 degrees off on channels 1-4. The two rows already agree
+on channel 0 (`-pi/2` and `3pi/2` are the same angle), so the centre never
+differed between them. Note the row is unrelated to the board's address variant
+despite the shared "white" label.
+
+---
+
 ## Provenance
 
 Measured with `inspect_eflesh.py`, which sweeps horizontal cross-sections and detects
