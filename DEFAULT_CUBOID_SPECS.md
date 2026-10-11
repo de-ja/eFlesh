@@ -103,7 +103,7 @@ skins do. You need your own holder or adhesive; nothing in the download covers m
 | Magnetometers | 5 × MLX90393 (ReSkin / AnySkin rigid PCB) |
 | I²C addresses | `0x0C, 0x0D, 0x0E, 0x0F, 0x10` (alt set: `0x0C, 0x10, 0x11, 0x12, 0x13`) |
 | Microcontroller | Adafruit QT Py (Trinket M0 also supported) |
-| Firmware | [`arduino/5X_eflesh_stream/5X_eflesh_stream.ino`](arduino/5X_eflesh_stream/5X_eflesh_stream.ino) |
+| Firmware | [`arduino/eflesh_cmd_stream/eflesh_cmd_stream.ino`](arduino/eflesh_cmd_stream/eflesh_cmd_stream.ino) (default settings) |
 | Stream width | 15 channels — 5 sensors × 3 axes |
 
 5 magnetometers read 4 magnets.
@@ -213,11 +213,140 @@ Nothing saturates at `setGainSel(0x1)`, and per-channel noise is ~2.5 uT.
 **The arms are not equal, and by symmetry they should be.** A 2x2 alternating
 array is invariant under 90-degree rotation plus a polarity flip, so all four
 edge chips ought to read the same magnitude. The observed spread is 1.8x
-(1255 to 2230). Candidate causes, unresolved: PCB offset from the array centre
-(remember the array sits 2.00 mm -y of the part centre), magnet seating depth
-variation, or unit variation in the magnets or chips. Measure the same profile
-on the next build -- two cuboids is enough to tell a fixed jig error from
-per-part variation.
+(1255 to 2230), and it reproduces across reseating, so it is a property of the
+build rather than mounting chance. Candidate causes: PCB offset from the array
+centre (remember the array sits 2.00 mm -y of the part centre), magnet seating
+depth variation, or unit variation in the magnets or chips.
+
+**It has no functional consequence.** See the press response below: the arm
+with the weakest resting field responds as strongly as the others. The
+asymmetry is a static offset, which baseline subtraction removes. Still worth
+measuring on the next build -- two cuboids is enough to tell a fixed jig error
+from per-part variation -- but it does not need fixing before the sensor is
+usable.
+
+### Press response, build #1
+
+Flat palm press over the whole top face, peak dB against a 2 s baseline,
+5555 frames. Resting values differ slightly from the table above because the
+cuboid was reseated; reseating shifts the field by a few percent.
+
+| chip | position | resting (uT) | noise (uT) | peak \|dB\| (uT) | SNR |
+|---|---|---|---|---|---|
+| 0 | middle | 823 | 3.0 | 955 | 315 |
+| 1 | left | 1972 | 3.1 | 2523 | 814 |
+| 2 | right | 1964 | 3.1 | 3220 | 1033 |
+| 3 | top | 1268 | 3.8 | 3176 | 826 |
+| 4 | bottom | 2327 | 3.3 | 3081 | 944 |
+
+Two findings.
+
+**The centre chip is about 3x less responsive than the arms.** The four arms
+cluster inside a 1.28x spread (2523 to 3220) while the centre reaches 955. An
+uneven palm press would scatter the arms too; they are tight, so the gap is
+the field null at the centre, not the press. This is the measured cost of
+alternating polarity, and it is a cost in *response*, not just in resting
+field -- 3.1x versus the 2.3x deficit in the resting value.
+
+**It does not matter at press amplitudes, and might at slip amplitudes.**
+Centre SNR is 315 against a 3 uT noise floor: two orders of magnitude of
+headroom, so normal-force sensing and contact localisation are unaffected.
+Small-amplitude signals are the exposure. A perturbation at 1% of a press is
+~10 uT at the centre against ~30 uT at the arms, SNR 3 versus 10, so the
+centre's threshold for faint contact is ~3x higher. Slip is exactly that kind
+of signal. Alternating polarity does not break slip detection, but the centre
+chip contributes a weaker vote on the faintest events.
+
+Note also that no frame in 5555 was corrupt, with firmware that does not check
+`readBurstData()` status at all. Bad reads are not a property of these chips.
+
+### Aligned vs alternating, measured
+
+Same board, same press protocol, a second cuboid built with all four magnets
+north-up.
+
+| chip | resting (uT) | noise (uT) | peak \|dB\| (uT) | SNR |
+|---|---|---|---|---|
+| middle | 13663 | 11.6 | 4308 | 372 |
+| left | 14377 | 13.0 | 11290 | 871 |
+| right | 14598 | 10.8 | 10697 | 988 |
+| top | 14236 | 16.5 | 5163 | 313 |
+| bottom | 14668 | 9.7 | 8087 | 833 |
+
+Means against the alternating build:
+
+| | alternating | aligned | ratio |
+|---|---|---|---|
+| resting | 1671 | 14308 | 8.6x |
+| peak \|dB\| | 2591 | 7909 | 3.05x |
+| noise | 3.3 | 12.3 | 3.78x |
+| **SNR** | **786** | **675** | **0.86x** |
+
+**Aligned is about 3x more sensitive.** Signal rises 3x and the noise floor is
+unchanged, so the SNR ratio is just the signal ratio.
+
+> **Superseded reading.** The press run above measured 9.7-16.5 uT noise on the
+> aligned build and 3.0-3.8 uT on the alternating one, which suggested noise
+> scaled with field magnitude and that SNR was a wash. That does not reproduce.
+> Two later 3 s windows on both boards, with the aligned cuboid still at 14 mT,
+> give 2.4-3.2 uT. The inflated figure came from `press.py` taking its baseline
+> three seconds after the cuboid was handled and mounted -- thermal and
+> mechanical settling widening the standard deviation. **Measure noise only
+> after ~30 s of settling.**
+
+With XY quantisation at 2.4 uT/LSB, both builds sit at roughly one LSB: they
+are quantisation-limited, not physics-limited, and share a noise floor.
+
+| | alternating | aligned |
+|---|---|---|
+| mean peak \|dB\| | 2591 uT | 7909 uT |
+| noise floor | ~2.5 uT | ~2.5 uT |
+| **SNR** | **~1040** | **~3160** |
+
+**Aligned does not make the centre chip strong either.** All five resting
+fields land within 7% at ~14 mT: the centre is 11.3 mm from every magnet while
+the arms are 8.1 mm from their two nearest, and that distance penalty cancels
+the four-versus-two advantage. Centre SNR is 372 aligned against 315
+alternating -- 18% apart, not 3x.
+
+So most of the centre's weakness is **geometric, not polarity**. A 1/r^4
+gradient argument predicts the centre responds 1.9x less than the arms; the
+aligned build measures 2.0x. The alternating build measures 3.1x, so the null
+adds ~1.5x on top of geometry, not 3x. Revise the section above accordingly:
+the null is real but secondary.
+
+**Conclusion: unresolved, and it depends on a number not yet measured.**
+Alternating costs a real 3x in SNR, and buys far-field isolation between
+neighbouring sensors. Whether that is a good trade depends on how much two
+cuboids actually pollute each other at working separation, which has not been
+measured. If crosstalk is negligible at gripper spacing, prefer aligned and
+take the 3x. If it is significant, alternating earns its cost.
+
+To measure it: two boards behind an I2C mux, cuboids at a known separation,
+hold one still and press the other, and look for signal on the stationary one.
+Repeat at several distances. Note that the boards must be *deliberately*
+placed -- an incidental bench layout tells you nothing about gripper spacing.
+
+Unexplained: `top` has the weakest resting field in the alternating build but
+responds normally there (SNR 826), while in the aligned build it responds worst
+(SNR 313). Different cuboids, same board, no consistent story. Revisit only if
+it recurs on a third build.
+
+### Full scale and quantisation
+
+From the library, with the sketch's `setGainSel(0x1)` (x4),
+`setResolution(0x2,0x2,0x2)` (x4) and the chip's default `HALLCONF` 0xC
+(0.150 uT XY, 0.242 uT Z base sensitivity):
+
+- **1 LSB = 2.4 uT on XY, 3.87 uT on Z**
+- **Full scale = +/-78.6 mT on XY, +/-126.9 mT on Z**
+
+Even the aligned build, at 14 mT resting with 11 mT excursions, uses about a
+third of XY range. Saturation is not a concern for either polarity.
+
+This also identifies the corrupt reads seen during ESP32-C3 bring-up:
+`78640.8 uT` is exactly `(65535 - 32768) * 2.4`, i.e. raw `0xFFFF`. Those were
+failed I2C reads returning all ones, not chip noise.
 
 ### Chip rotations
 
