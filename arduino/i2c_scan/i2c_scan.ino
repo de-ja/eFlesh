@@ -7,7 +7,7 @@
   Expected results:
     0x0C 0x0D 0x0E 0x0F 0x10   -> TARGETS_ALL_CONSEC variant
     0x0C 0x10 0x11 0x12 0x13   -> TARGETS_WHITE_SET variant
-  Both sets are already known to 5X_eflesh_stream.ino.
+  Both sets are already known to eflesh_cmd_stream.ino.
 
   A multiplexer, if in line, appears at 0x70 (0x70-0x77 depending on jumpers)
   and hides everything downstream until a channel is selected.
