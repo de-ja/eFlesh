@@ -11,7 +11,27 @@ the signal layer and the fake source work without hardware or that dependency.
 signals.py   pure numpy -- baselines and derived signals, no I/O
 stream.py    serial acquisition, shaped as a pollable sensor source
 web.py       JSON payloads for a browser frontend
+device.py    configure and stream the eflesh_cmd_stream firmware (no anyskin)
+sim.py       that firmware's command protocol on a pseudo-terminal, for testing
 ```
+
+`device.py` is for retuning the chips; `EFleshSource` is for consuming the
+stream. They work against the same firmware, but not at the same time, since
+each holds the port:
+
+```python
+from eflesh.device import EFleshDevice
+
+dev = EFleshDevice("/dev/ttyACM0")
+dev.open()                       # reads INFO, PARAMS and GET from the firmware
+dev.set(osr=2, filt=5)           # validated and applied by the firmware
+dev.derived()["lsb_x"]           # uT per LSB at the new settings
+dev.start()
+t, data = dev.snapshot(500)      # (n, mags, 4): temperature, x, y, z
+dev.close()                      # leaves the board streaming binary
+```
+
+`visualizer/eflesh_tuner.py` is the GUI on top of it.
 
 ## Quick start
 
