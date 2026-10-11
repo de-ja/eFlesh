@@ -184,3 +184,6 @@ reports/
 # Recorded sensor streams
 logs/
 data/
+
+# Local archive of retired firmware; the history keeps the originals
+arduino/archive/
