@@ -515,6 +515,12 @@ def main():
     p.add_argument("--sim", action="store_true", help="use the simulated firmware")
     args = p.parse_args()
 
+    # Qt's Wayland backend aborts on recent GNOME, which dropped the xsettings
+    # "antialiasing" key it reads. X11 through XWayland works; an explicit
+    # QT_QPA_PLATFORM still wins.
+    if sys.platform.startswith("linux") and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
     app = QtWidgets.QApplication(sys.argv)
     pg.setConfigOptions(antialias=False)
     win = Tuner(port=args.port, sim=args.sim)
