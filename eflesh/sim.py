@@ -8,8 +8,9 @@ settings table, so keep the two in step when the firmware changes.
 
 The data is synthetic: per-chip offsets, noise that shrinks with OSR and the
 digital filter, quantised to the current uT/LSB, and a slow press on the middle
-chip of each board. Failed reads are simulated when the frame period is shorter
-than the conversion time, as on the real chip.
+chip of each board. Frames are paced like the firmware's single-measurement
+loop: one per conversion time plus period_us, never faster than the bus can
+read every chip.
 
 POSIX only (uses pty).
 """
@@ -36,13 +37,13 @@ PARAMS = [
     ("osr", 0, 0, 3, "Magnetic oversampling OSR: higher = less noise, slower conversion"),
     ("osr2", 0, 0, 3, "Temperature oversampling OSR2: higher = less noise, slower conversion"),
     ("tcmp", 0, 0, 1, "On-chip temperature compensation TCMP_EN"),
-    ("period_us", 500, 0, 100000, "Delay between frames, microseconds"),
+    ("period_us", 0, 0, 100000, "Extra wait between frames on top of the conversion time, microseconds"),
     ("ascii", 0, 0, 1, "Output: 0 = binary frames (anyskin), 1 = tab-separated text (Serial Plotter)"),
 ]
 CHIP_PARAMS = {"gain", "res_x", "res_y", "res_z", "filt", "osr", "osr2", "tcmp"}
 GAIN_MULT = [5.0, 4.0, 3.0, 2.5, 2.0, 1.66666667, 1.33333333, 1.0]
 ADDRS = [0x0C, 0x11, 0x12, 0x13, 0x10]
-READ_US_PER_CHIP = 350      # I2C burst read at 400 kHz, roughly as measured
+READ_US_PER_CHIP = 550      # read + restart one chip at 400 kHz, as measured
 
 
 class FirmwareSim:
@@ -102,7 +103,8 @@ class FirmwareSim:
     def conv_us(self) -> int:
         v = self.values
         per_axis = 67 + 64 * (1 << v["osr"]) * (2 + (1 << v["filt"]))
-        return 3 * per_axis + 67 + 192 * (1 << v["osr2"])
+        sheet = 3 * per_axis + 67 + 192 * (1 << v["osr2"])
+        return sheet + sheet // 32 + 600
 
     # ------------------------------------------------------------ I/O loop
 
@@ -126,8 +128,7 @@ class FirmwareSim:
             # Only queue a frame once the last one has gone out: USB back-pressure.
             if self.streaming and not self._out and now >= next_frame:
                 self._emit_frame()
-                interval = (self.values["period_us"] + READ_US_PER_CHIP * self.mags) / 1e6
-                next_frame = now + interval
+                next_frame = now + self._interval_us() / 1e6
 
     def _flush(self) -> None:
         if not self._out:
@@ -138,16 +139,15 @@ class FirmwareSim:
         except (BlockingIOError, OSError):
             pass
 
+    def _interval_us(self) -> float:
+        busy = max(self.conv_us() + READ_US_PER_CHIP, READ_US_PER_CHIP * self.mags)
+        return busy + self.values["period_us"]
+
     def _emit_frame(self) -> None:
         t = time.monotonic() - self._t0
-        interval_us = self.values["period_us"] + READ_US_PER_CHIP * self.mags
-        late = self.conv_us() > interval_us
         noise_ut = 6.0 / np.sqrt((1 << self.values["osr"]) * (1 + self.values["filt"]))
         press = 400.0 * max(0.0, np.sin(2 * np.pi * 0.3 * t)) ** 2
         for k in range(self.mags):
-            if late and self._rng.random() < 0.3:
-                self._fails[k] += 1
-                continue
             field = self._offset[k] + self._rng.normal(0, noise_ut, 3)
             if k % MAGS_PER_BOARD == 0:
                 field[2] -= press

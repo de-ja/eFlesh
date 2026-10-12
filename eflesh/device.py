@@ -291,9 +291,9 @@ class EFleshDevice:
     def stats(self) -> Dict[str, Value]:
         """Frames sent and failed reads per magnetometer since the last call.
 
-        `fails` is a list in stream order. A read fails when a chip does not
-        answer in time, typically because the frame period is shorter than its
-        conversion time.
+        `fails` is a list in stream order: reads that came back without data
+        (I2C error or no finished measurement), each sent as a repeat of that
+        chip's last good sample. It should stay at 0 at every setting.
         """
         reply = self.command("STATS")
         out = _parse_pairs(reply.split()[2:])
