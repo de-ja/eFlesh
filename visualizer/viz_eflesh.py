@@ -38,8 +38,14 @@ def visualize(port, file=None, viz_mode="3axis", scaling=7.0, record=False):
     # chip_locations=np.array([[408,405],[247,405],[559,405],[404,259],[404,546]])
     # chip_locations = np.array([[603, 600], [369, 607], [832, 609], [607, 391], [603, 813]])
     chip_locations = np.array([[455, 453], [275, 451], [624, 455], [451, 292], [454, 613]])
-    chip_xy_rotations = np.array([-np.pi / 2, -np.pi / 2, np.pi, np.pi / 2, 0.0]) # black
-    # chip_xy_rotations = np.array([3*np.pi / 2, 0, -np.pi/2, np.pi, np.pi/2]) # white
+    # Verified on hardware 2026-09-02 with a handheld magnet on a bare board:
+    # held to one side of a chip, every arrow points along the chip-magnet line,
+    # and directly overhead the arrow collapses to zero while the circle peaks.
+    # These are the repo's original "black" values -- the "white" alternative
+    # differs only on chips 1-4 and reads 90 deg off there. The two rows already
+    # agree on chip 0 (-pi/2 == 3pi/2), so the centre never varied between them.
+    chip_xy_rotations = np.array([-np.pi / 2, -np.pi / 2, np.pi, np.pi / 2, 0.0])
+    # chip_xy_rotations = np.array([3*np.pi / 2, 0, -np.pi/2, np.pi, np.pi/2]) # white -- 90 deg off on chips 1-4
 
     # Resize the background image to the new dimensions
     bg_image = pygame.transform.scale(bg_image, (desired_width, desired_height))
@@ -113,7 +119,7 @@ def visualize(port, file=None, viz_mode="3axis", scaling=7.0, record=False):
     frame_num = 0
     running = True
     data = []
-    data_len = 30000
+    replay_idx = 0
     clock = pygame.time.Clock()
     FPS = 60
     while running:
@@ -132,8 +138,11 @@ def visualize(port, file=None, viz_mode="3axis", scaling=7.0, record=False):
                     baseline_data = np.array(baseline_data)[:, 1:]
                     baseline = np.mean(baseline_data, axis=0)
         if file is not None:
-            sensor_data = load_data[data_len]
-            data_len += 24
+            if replay_idx >= len(load_data):
+                running = False
+                continue
+            sensor_data = load_data[replay_idx]
+            replay_idx += 1
             baseline = np.zeros_like(sensor_data)
             # print(f"curr_time: {time.time() - start_time}")
         else:

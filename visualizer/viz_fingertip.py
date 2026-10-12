@@ -180,7 +180,11 @@ def plot_visualizer(port, baudrate=9600, runtime=180, num_mags=5, record=True):
         sensor_stream.join()
 
         if record and 'recorded_data' in locals() and recorded_data:
-            np.savetxt(filename, np.array(recorded_data), header="Time,Bx0,By0,Bz0,Bx1,By1,Bz1", delimiter=",")
+            # One column per channel actually written: time + num_mags * (x, y, z)
+            header = ",".join(
+                ["Time"] + [f"B{axis}{mag}" for mag in range(num_mags) for axis in "xyz"]
+            )
+            np.savetxt(filename, np.array(recorded_data), header=header, delimiter=",")
             print(f"Recorded data saved to {filename}")
         else:
             print("No data recorded or saved.")
