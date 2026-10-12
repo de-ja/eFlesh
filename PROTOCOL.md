@@ -35,10 +35,15 @@ Each `mag_i` is four little-endian IEEE-754 `float32`, in this order:
 
 So `frame_length = 16 * num_mags + 2`.
 
-| configuration | num_mags | frame | measured rate |
+| configuration | num_mags | frame | rate at default settings |
 |---|---|---|---|
-| one board, direct | 5 | 82 B | ~400 Hz |
-| two boards via I2C mux | 10 | 162 B | ~194 Hz |
+| one board, direct | 5 | 82 B | 193 Hz, measured |
+| two boards via I2C mux | 10 | 162 B | not yet measured; the bus limits it to roughly 180 Hz |
+
+Every frame holds a fresh sample from every chip, so the rate is set by the
+chips' conversion time (`conv_us` in `GET`, see below). Older burst-mode
+firmware reported ~400 Hz and ~194 Hz, but many of those frames repeated the
+previous sample.
 
 ### Frame width is decided by the firmware at boot
 
@@ -177,5 +182,11 @@ What a driver needs to know:
 - **`SET` is atomic.** All pairs are validated first, including the OSR /
   DIG_FILT pairs the MLX90393 does not permit, and nothing is applied on `ERR`.
 - **Settings are not persistent.** They reset to the defaults on power-up.
+- **Frame rate follows the settings.** One frame per `conv_us + period_us`, so
+  more OSR or filtering means fewer frames: 193 Hz at the defaults, 333 Hz at
+  `filt=2`, 18 Hz at `osr=2 filt=6`, 5 Hz at the slowest. The firmware runs
+  the chips in single-measurement mode and reads each one only after its
+  conversion finishes, so there are no repeated frames and `STATS` fails stay
+  at 0.
 
 `eflesh/device.py` (`EFleshDevice`) implements all of this.

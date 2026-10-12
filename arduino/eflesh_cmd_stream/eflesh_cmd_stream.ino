@@ -39,7 +39,18 @@
   Derived values in GET (from the MLX90393 datasheet, HALLCONF = 0xC):
     lsb_x/y/z    microtesla per LSB
     range_x/y/z  representable output range, +/- millitesla
-    conv_us      burst conversion time for T + X + Y + Z on one chip
+    conv_us      time one chip needs for T + X + Y + Z, which sets the frame
+                 rate: one frame per conv_us + period_us
+
+  The chips run single measurements, not burst mode: each is read and at once
+  told to measure again, then left alone for conv_us. Every frame therefore
+  holds a fresh sample from every chip. In burst mode the host cannot tell a
+  fresh sample from a repeat, and reads that land mid-conversion return
+  0xFFFF; at slow settings some chips never deliver at all.
+
+  STATS fails count reads that came back without data (I2C error, the status
+  ERROR bit, or raw 0xFFFF); the frame repeats that chip's last good sample.
+  At any setting this should stay at 0.
 
   Adapted from 5X_eflesh_stream.ino (Venkatesh P) and 10X_eflesh_mux_stream.ino,
   same Beerware license.
@@ -70,6 +81,7 @@ uint8_t         numBoards = 0;
 uint8_t         muxAddr   = 0;                      // 0 = no mux
 
 uint32_t fails[MAX_BOARDS][MAGS_PER_BOARD];
+uint32_t startedAt[MAX_BOARDS][MAGS_PER_BOARD];     // micros() of the last start-measurement
 uint32_t frames     = 0;
 uint32_t statsSince = 0;
 bool     streaming  = false;
@@ -87,7 +99,7 @@ struct Param {
 enum { P_GAIN, P_RES_X, P_RES_Y, P_RES_Z, P_FILT, P_OSR, P_OSR2, P_TCMP,
        P_PERIOD, P_ASCII, NUM_PARAMS, NUM_CHIP_PARAMS = P_PERIOD };
 
-// Defaults match the original sketches: gain 1, resolution 2, filter 4, OSR 0.
+// Chip defaults match the original sketches: gain 1, resolution 2, filter 4, OSR 0.
 Param params[NUM_PARAMS] = {
   {"gain",      1,   1,   0, 7,      "Analog gain GAIN_SEL: 0 = lowest gain (widest range), 7 = highest"},
   {"res_x",     2,   2,   0, 3,      "X output resolution RES_X: each step doubles uT/LSB and range"},
@@ -97,7 +109,7 @@ Param params[NUM_PARAMS] = {
   {"osr",       0,   0,   0, 3,      "Magnetic oversampling OSR: higher = less noise, slower conversion"},
   {"osr2",      0,   0,   0, 3,      "Temperature oversampling OSR2: higher = less noise, slower conversion"},
   {"tcmp",      0,   0,   0, 1,      "On-chip temperature compensation TCMP_EN"},
-  {"period_us", 500, 500, 0, 100000, "Delay between frames, microseconds"},
+  {"period_us", 0,   0,   0, 100000, "Extra wait between frames on top of the conversion time, microseconds"},
   {"ascii",     0,   0,   0, 1,      "Output: 0 = binary frames (anyskin), 1 = tab-separated text (Serial Plotter)"},
 };
 
@@ -130,12 +142,15 @@ float rangeMT(uint8_t axis) {
   return (half ? 16384.f : 32768.f) * lsbUT(axis) / 1000.f;
 }
 
-// Datasheet: TCONVM per axis and TCONVT for temperature, microseconds.
+// Datasheet TCONVM per axis plus TCONVT for temperature, microseconds. Real
+// chips need ~0.55 ms more than the datasheet sum at every setting (measured
+// on a QT Py board), so add 0.6 ms plus 3 % for clock spread.
 uint32_t convMicros() {
   uint32_t osr = params[P_OSR].value, filt = params[P_FILT].value, osr2 = params[P_OSR2].value;
   uint32_t perAxis = 67 + 64 * (1UL << osr) * (2 + (1UL << filt));
   uint32_t temp    = 67 + 192 * (1UL << osr2);
-  return 3 * perAxis + temp;
+  uint32_t sheet   = 3 * perAxis + temp;
+  return sheet + sheet / 32 + 600;
 }
 
 // ---------------------------------------------------------------- bus
@@ -241,8 +256,35 @@ void addBoard(uint8_t ch) {
 
 // ---------------------------------------------------------------- chips
 
-// Push the chip settings to every magnetometer. Each chip leaves burst mode,
-// takes the new registers, is read back, and restarts the burst. Returns the
+// After EX the chip still answers commands such as NOP, but register reads
+// fail until the conversion it was running ends: ~4 ms at the defaults, ~200 ms
+// at the slowest settings. Poll a register read until it succeeds.
+uint8_t waitIdle(MLX90393& m) {
+  for (uint16_t ms = 0; ms < 500; ++ms) {
+    uint16_t v;
+    if (m.checkStatus(m.readRegister(0, v)) == MLX90393::STATUS_OK) return MLX90393::STATUS_OK;
+    delay(1);
+  }
+  return MLX90393::STATUS_ERROR;
+}
+
+const uint8_t TXYZ = MLX90393::X_FLAG | MLX90393::Y_FLAG | MLX90393::Z_FLAG | MLX90393::T_FLAG;
+
+// Start a measurement on every chip. One still busy with the last one rejects
+// the start, and its next read collects that measurement instead.
+void startAll() {
+  for (uint8_t b = 0; b < numBoards; ++b) {
+    selectChannel(boardChan[b]);
+    for (uint8_t i = 0; i < MAGS_PER_BOARD; ++i) {
+      if (!addrs[b][i]) continue;
+      mlx[b][i].startMeasurement(TXYZ);
+      startedAt[b][i] = micros();
+    }
+  }
+}
+
+// Push the chip settings to every magnetometer. Each chip abandons any
+// measurement in flight, takes the new registers and is read back. Returns the
 // number of chips that failed; their details go to `errOut` for the reply.
 uint8_t applyChipConfig(char* errOut, size_t errLen) {
   uint8_t bad = 0;
@@ -254,7 +296,7 @@ uint8_t applyChipConfig(char* errOut, size_t errLen) {
       MLX90393& m = mlx[b][i];
       uint8_t s = MLX90393::STATUS_OK;
       s |= m.checkStatus(m.exit());
-      delay(1);
+      s |= waitIdle(m);
       s |= m.setGainSel(params[P_GAIN].value);
       s |= m.setResolution(params[P_RES_X].value, params[P_RES_Y].value, params[P_RES_Z].value);
       s |= m.setOverSampling(params[P_OSR].value);
@@ -274,8 +316,6 @@ uint8_t applyChipConfig(char* errOut, size_t errLen) {
                    osr == params[P_OSR].value && filt == params[P_FILT].value &&
                    osr2 == params[P_OSR2].value && tcmp == params[P_TCMP].value;
 
-      s |= m.startBurst(0xF);         // T + X + Y + Z
-
       if (s != MLX90393::STATUS_OK || !match) {
         if (!bad) snprintf(errOut, errLen, "chip b%u.%u @0x%02X %s",
                            b, i, addrs[b][i], match ? "i2c error" : "readback mismatch");
@@ -284,21 +324,42 @@ uint8_t applyChipConfig(char* errOut, size_t errLen) {
     }
   }
   deselectAll();
+  if (streaming) startAll();   // ASCII mode keeps streaming through a SET
   return bad;
 }
 
+// Read every chip and restart it straight away, so each one gets a full
+// conversion before its next read. Chips are visited in the same order every
+// time, so the wait below is near zero; it only matters if the bus stalls.
 void readAll() {
+  uint32_t conv = convMicros();
   for (uint8_t b = 0; b < numBoards; ++b) {
     selectChannel(boardChan[b]);
     for (uint8_t i = 0; i < MAGS_PER_BOARD; ++i) {
       if (!addrs[b][i]) continue;
-      MLX90393::txyz sample;
-      // Hold the last good sample on a failed read. A failure returns raw
-      // 0xFFFF, which converts to a huge bogus value that poisons baselines.
-      if (mlx[b][i].readBurstData(sample) == MLX90393::STATUS_OK) dataBuf[b][i] = sample;
+      MLX90393& m = mlx[b][i];
+      while (micros() - startedAt[b][i] < conv) {}
+      MLX90393::txyzRaw raw;
+      uint8_t st = m.readMeasurement(TXYZ, raw);
+      m.startMeasurement(TXYZ);
+      startedAt[b][i] = micros();
+      // On a failed read hold the last good sample: raw 0xFFFF converts to a
+      // huge bogus value that poisons baselines.
+      if (st != MLX90393::STATUS_ERROR && !(st & MLX90393::ERROR_BIT) &&
+          raw.x != 0xFFFF && raw.y != 0xFFFF && raw.z != 0xFFFF)
+        dataBuf[b][i] = m.convertRaw(raw);
       else ++fails[b][i];
     }
   }
+}
+
+// The first chip in the frame sets the pace; the rest were started just after it.
+bool frameDue() {
+  for (uint8_t b = 0; b < numBoards; ++b)
+    for (uint8_t i = 0; i < MAGS_PER_BOARD; ++i)
+      if (addrs[b][i])
+        return micros() - startedAt[b][i] >= convMicros() + (uint32_t)params[P_PERIOD].value;
+  return false;
 }
 
 // ---------------------------------------------------------------- output
@@ -481,6 +542,7 @@ void handleLine(char* line) {
     if (!numBoards) { Serial.println(F("ERR no boards found at boot")); return; }
     Serial.println(F("OK START"));
     if (params[P_ASCII].value) writeAsciiHeader();
+    startAll();
     streaming = true;
   }
   else if (strcasecmp(cmd, "INFO") == 0)   printInfo();
@@ -580,6 +642,7 @@ void setup() {
   Serial.println(F(" bytes/frame. Send HELP for commands."));
 
   statsSince = millis();
+  startAll();
   streaming = true;
 }
 
@@ -587,14 +650,10 @@ void setup() {
 
 void loop() {
   pollCommands();
-  if (!streaming) return;
+  if (!streaming || !frameDue()) return;   // commands stay live during long conversions
 
   readAll();
   if (params[P_ASCII].value) writeAscii();
   else writeBinary();
   ++frames;
-
-  uint32_t p = params[P_PERIOD].value;
-  if (p >= 1000) delay(p / 1000);
-  delayMicroseconds(p % 1000);
 }
