@@ -31,3 +31,8 @@ python visualizer/eflesh_tuner.py --sim       # simulated firmware, no hardware
 The settings panel is built from the firmware's own settings table, so a
 setting added to the sketch shows up here without a Python change. Settings
 live in the board's RAM and reset to the defaults on power-up.
+
+The plots always fit their height to the data. The mouse wheel and drags zoom
+the value axis for a look, and the next frame fits it again; Pause first to
+hold a zoom. The time axis follows the Window control. Each chip position keeps
+one color across plots, table and chip selector, and a second board is dashed.

@@ -43,6 +43,35 @@ PLOTS = (("X", 1, "uT"), ("Y", 2, "uT"), ("Z", 3, "uT"), ("Temperature", 0, "C")
 STATS_COLUMNS = ["chip", "mean x", "mean y", "mean z", "σx", "σy", "σz",
                  "σx LSB", "σy LSB", "σz LSB", "fails/s"]
 TICK_MS = 33
+
+# One color per chip position (middle, left, right, top, bottom), so a position
+# keeps its color whichever chips are shown; board 1 is drawn dashed. These are
+# the first five slots of a categorical palette checked for colour-blind
+# separation and >= 3:1 contrast on PLOT_BG.
+CHIP_COLORS = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181")
+PLOT_BG = "#1a1a19"
+PLOT_FG = "#c3c2b7"
+LINE_WIDTH = 2
+# Antialiased 2 px lines roughly double the draw time, so they are only used
+# while few enough curves share a plot to keep the frame rate up.
+MAX_SMOOTH_CURVES = 5
+
+
+def chip_pen(k):
+    board, i = divmod(k, len(CHIP_COLORS))
+    style = QtCore.Qt.DashLine if board else QtCore.Qt.SolidLine
+    return pg.mkPen(CHIP_COLORS[i], width=LINE_WIDTH, style=style)
+
+
+def chip_icon(k):
+    pm = QtGui.QPixmap(22, 10)
+    pm.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pm)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    painter.setPen(chip_pen(k))
+    painter.drawLine(1, 5, 21, 5)
+    painter.end()
+    return QtGui.QIcon(pm)
 APPLY_DEBOUNCE_MS = 250
 
 
@@ -234,10 +263,20 @@ class Tuner(QtWidgets.QMainWindow):
         rv.addLayout(controls)
 
         self.graphs = pg.GraphicsLayoutWidget()
+        # The legend sits in its own row above the plots so it never covers data.
+        self.legend = pg.LegendItem(colCount=5, labelTextColor=PLOT_FG, frame=False)
+        self.graphs.addItem(self.legend, row=0, col=0)
         self.plots = []
-        for row, (name, _, _) in enumerate(PLOTS):
+        for row, (name, _, _) in enumerate(PLOTS, start=1):
             p = self.graphs.addPlot(row=row, col=0)
-            p.showGrid(x=True, y=True, alpha=0.2)
+            p.showGrid(x=True, y=True, alpha=0.15)
+            p.setDownsampling(auto=True, mode="peak")
+            p.setClipToView(True)
+            # Time is set by the Window control; the wheel and drags only act
+            # on Y, and the Y range snaps back to the data on the next frame
+            # unless the stream is paused.
+            p.setMouseEnabled(x=False, y=True)
+            p.hideButtons()
             if self.plots:
                 p.setXLink(self.plots[0])
             self.plots.append(p)
@@ -318,14 +357,14 @@ class Tuner(QtWidgets.QMainWindow):
         self.chip_box.clear()
         self.chip_box.addItem("All chips")
         for k in range(info.mags):
-            self.chip_box.addItem(self._chip_name(k))
+            self.chip_box.addItem(chip_icon(k), self._chip_name(k))
         self.chip_box.blockSignals(False)
         self.fails = None
         self.fw_rate = None
         self.last_change = time.time()
         self.table.setRowCount(info.mags)
         for k in range(info.mags):
-            self.table.setItem(k, 0, QtWidgets.QTableWidgetItem(self._chip_name(k)))
+            self.table.setItem(k, 0, QtWidgets.QTableWidgetItem(chip_icon(k), self._chip_name(k)))
         self._rebuild_curves()
 
     def disconnect_device(self):
@@ -433,11 +472,16 @@ class Tuner(QtWidgets.QMainWindow):
             for c in curves:
                 p.removeItem(c)
             curves.clear()
+        self.legend.clear()
         chips = self._selected_chips()
+        smooth = len(chips) <= MAX_SMOOTH_CURVES
         for p, curves in zip(self.plots, self.curves):
-            for n, k in enumerate(chips):
-                color = pg.intColor(k, hues=max(len(chips), 1)) if len(chips) > 1 else "w"
-                curves.append(p.plot(pen=pg.mkPen(color, width=1)))
+            for k in chips:
+                curves.append(p.plot(pen=chip_pen(k), antialias=smooth))
+        if len(chips) > 1:
+            for k, curve in zip(chips, self.curves[0]):
+                self.legend.addItem(curve, self._chip_name(k))
+        self.legend.setVisible(len(chips) > 1)
 
     def tick(self):
         if not self.dev or self.pause.isChecked():
@@ -462,6 +506,7 @@ class Tuner(QtWidgets.QMainWindow):
                 curve.setData(t, y)
         for p in self.plots:
             p.setXRange(-self.window_s.value(), 0, padding=0)
+            p.enableAutoRange(y=True)
 
         for when, lines in list(self.markers):
             x = when - now
@@ -522,7 +567,7 @@ def main():
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
     app = QtWidgets.QApplication(sys.argv)
-    pg.setConfigOptions(antialias=False)
+    pg.setConfigOptions(background=PLOT_BG, foreground=PLOT_FG)
     win = Tuner(port=args.port, sim=args.sim)
     win.show()
     sys.exit(app.exec())
