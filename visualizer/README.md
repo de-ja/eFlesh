@@ -36,3 +36,24 @@ The plots always fit their height to the data. The mouse wheel and drags zoom
 the value axis for a look, and the next frame fits it again; Pause first to
 hold a zoom. The time axis follows the Window control. Each chip position keeps
 one color across plots, table and chip selector, and a second board is dashed.
+
+### Verify tab
+
+A guided check of a board, step by step, with a live diagram of the pad showing
+which chip responds. It automates "Verifying an assembled cuboid" in
+[`../DEFAULT_CUBOID_SPECS.md`](../DEFAULT_CUBOID_SPECS.md) and needs a small
+magnet for the board stage.
+
+1. **Bare board** (cuboid off): addresses, read failures, noise and stillness;
+   then the magnet over each chip in turn, which must move that chip most (the
+   position map); then the magnet held level beyond the right edge and the top
+   edge, which checks every chip's rotation and the frame's handedness.
+2. **Cuboid seated**: seated and resting polarity, then a flat palm press that
+   every chip must respond to. If the magnet steps were skipped, a fingertip
+   press over each chip maps positions instead.
+
+Each step starts the next one when it passes; Retry or Skip any step. The
+verdict reads *incomplete* while steps are skipped or not run. **Save report**
+writes Markdown and JSON to `verify_reports/`. The checks themselves live in
+[`../eflesh/verify.py`](../eflesh/verify.py), with no UI code, so a script can
+run them too.

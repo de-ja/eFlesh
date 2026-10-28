@@ -47,14 +47,22 @@ READ_US_PER_CHIP = 550      # read + restart one chip at 400 kHz, as measured
 
 
 class FirmwareSim:
-    def __init__(self, num_boards: int = 2, mux: bool = True, seed: int = 0):
+    def __init__(self, num_boards: int = 2, mux: bool = True, seed: int = 0,
+                 auto_press: bool = True):
         self.num_boards = num_boards
+        self.auto_press = auto_press
+        #: (mags, 3) uT added to every frame, for staging presses and magnets in
+        #: tests. Assign a new array rather than editing in place.
+        self.external = np.zeros((num_boards * MAGS_PER_BOARD, 3))
         self.mux = mux
         self.mags = num_boards * MAGS_PER_BOARD
         self.values = {name: d for name, d, *_ in PARAMS}
         self.streaming = True
         self._rng = np.random.default_rng(seed)
-        self._offset = self._rng.normal(0, 1500, (self.mags, 3))
+        # Resting |B| per position from build #1 (alternating magnets), random directions.
+        rest = np.tile([712.0, 1839.0, 1911.0, 1255.0, 2230.0], num_boards)
+        dirs = self._rng.normal(0, 1, (self.mags, 3))
+        self._offset = rest[:, None] * dirs / np.linalg.norm(dirs, axis=1, keepdims=True)
         self._held = np.zeros((self.mags, 4), np.float32)
         self._fails = [0] * self.mags
         self._frames = 0
@@ -146,9 +154,10 @@ class FirmwareSim:
     def _emit_frame(self) -> None:
         t = time.monotonic() - self._t0
         noise_ut = 6.0 / np.sqrt((1 << self.values["osr"]) * (1 + self.values["filt"]))
-        press = 400.0 * max(0.0, np.sin(2 * np.pi * 0.3 * t)) ** 2
+        press = 400.0 * max(0.0, np.sin(2 * np.pi * 0.3 * t)) ** 2 if self.auto_press else 0.0
+        external = self.external
         for k in range(self.mags):
-            field = self._offset[k] + self._rng.normal(0, noise_ut, 3)
+            field = self._offset[k] + external[k] + self._rng.normal(0, noise_ut, 3)
             if k % MAGS_PER_BOARD == 0:
                 field[2] -= press
             q = np.array([self.lsb(a) for a in range(3)])

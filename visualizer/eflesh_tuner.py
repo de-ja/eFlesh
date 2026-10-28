@@ -8,8 +8,10 @@ file.
 
   left    connection, the firmware's settings, derived values (uT/LSB, range,
           conversion time), and per-chip read failures
-  right   live X / Y / Z / temperature for one chip or all of them, and a
-          per-chip table of mean and noise, in uT and in LSB
+  Live    X / Y / Z / temperature for one chip or all of them, and a per-chip
+          table of mean and noise, in uT and in LSB
+  Verify  a guided check of an assembled board: health, polarity, which chip
+          sits where, and axis orientation, saved as a report
 
 Applying a change pauses the stream for a few milliseconds and drops a marker
 on the plots, so before and after sit side by side. Noise statistics only use
@@ -37,41 +39,17 @@ from serial.tools import list_ports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from eflesh.device import DeviceError, EFleshDevice  # noqa: E402
 from eflesh.signals import CHIP_NAMES  # noqa: E402
+from tuner_style import PLOT_BG, PLOT_FG, chip_icon, chip_pen  # noqa: E402
+from verify_panel import VerifyPanel  # noqa: E402
 
 SIM_PORT = "simulator"
 PLOTS = (("X", 1, "uT"), ("Y", 2, "uT"), ("Z", 3, "uT"), ("Temperature", 0, "C"))
 STATS_COLUMNS = ["chip", "mean x", "mean y", "mean z", "σx", "σy", "σz",
                  "σx LSB", "σy LSB", "σz LSB", "fails/s"]
 TICK_MS = 33
-
-# One color per chip position (middle, left, right, top, bottom), so a position
-# keeps its color whichever chips are shown; board 1 is drawn dashed. These are
-# the first five slots of a categorical palette checked for colour-blind
-# separation and >= 3:1 contrast on PLOT_BG.
-CHIP_COLORS = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181")
-PLOT_BG = "#1a1a19"
-PLOT_FG = "#c3c2b7"
-LINE_WIDTH = 2
 # Antialiased 2 px lines roughly double the draw time, so they are only used
 # while few enough curves share a plot to keep the frame rate up.
 MAX_SMOOTH_CURVES = 5
-
-
-def chip_pen(k):
-    board, i = divmod(k, len(CHIP_COLORS))
-    style = QtCore.Qt.DashLine if board else QtCore.Qt.SolidLine
-    return pg.mkPen(CHIP_COLORS[i], width=LINE_WIDTH, style=style)
-
-
-def chip_icon(k):
-    pm = QtGui.QPixmap(22, 10)
-    pm.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(pm)
-    painter.setRenderHint(QtGui.QPainter.Antialiasing)
-    painter.setPen(chip_pen(k))
-    painter.drawLine(1, 5, 21, 5)
-    painter.end()
-    return QtGui.QIcon(pm)
 APPLY_DEBOUNCE_MS = 250
 
 
@@ -226,8 +204,8 @@ class Tuner(QtWidgets.QMainWindow):
         hv = QtWidgets.QVBoxLayout(health)
         self.rate_label = QtWidgets.QLabel("-")
         check = QtWidgets.QPushButton("Check read failures (1 s)")
-        check.setToolTip("Counts reads a chip did not answer in time, usually because "
-                         "the frame period is shorter than the conversion time.")
+        check.setToolTip("Counts reads a chip returned without data. Should be 0 at "
+                         "every setting.")
         check.clicked.connect(self.check_failures)
         hv.addWidget(self.rate_label)
         hv.addWidget(check)
@@ -293,9 +271,14 @@ class Tuner(QtWidgets.QMainWindow):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         rv.addWidget(self.table, 1)
 
+        self.verify = VerifyPanel(lambda: self.dev)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(right, "Live")
+        self.tabs.addTab(self.verify, "Verify")
+
         split = QtWidgets.QSplitter()
         split.addWidget(scroll)
-        split.addWidget(right)
+        split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         self.setCentralWidget(split)
 
@@ -307,7 +290,8 @@ class Tuner(QtWidgets.QMainWindow):
     def _refresh_ports(self, select=None):
         current = select or self.port_box.currentText()
         self.port_box.clear()
-        ports = [p.device for p in sorted(list_ports.comports(), key=lambda p: p.device)]
+        # USB devices only: Linux also lists dozens of built-in /dev/ttyS* ports.
+        ports = sorted(p.device for p in list_ports.comports() if p.vid is not None)
         self.port_box.addItems(ports + [SIM_PORT])
         if current:
             if self.port_box.findText(current) < 0:
@@ -366,6 +350,7 @@ class Tuner(QtWidgets.QMainWindow):
         for k in range(info.mags):
             self.table.setItem(k, 0, QtWidgets.QTableWidgetItem(chip_icon(k), self._chip_name(k)))
         self._rebuild_curves()
+        self.verify.reset(dev, self.port_box.currentText())
 
     def disconnect_device(self):
         if self.dev:
@@ -377,6 +362,7 @@ class Tuner(QtWidgets.QMainWindow):
         if self.sim:
             self.sim.close()
             self.sim = None
+        self.verify.reset(None)
         self.connect_btn.setText("Connect")
         self.port_box.setEnabled(True)
         self.info_label.setText("Not connected")
