@@ -44,6 +44,7 @@ class Step:
     position: Optional[int] = None
     side: str = ""                  # axis steps: right, top
     status: str = "pending"
+    manual: bool = False            # needs a setup change first, so never auto-started
 
 
 def worst(checks):
@@ -210,7 +211,7 @@ class VerifyPanel(QtWidgets.QWidget):
                     self.steps.append(Step(f"b{b}.axis.{side}", f"b{b} magnet beside {side}",
                                            "axis", b, side=side))
             # Stage 2, the cuboid seated.
-            self.steps.append(Step("cuboid", "Cuboid: rest", "cuboid"))
+            self.steps.append(Step("cuboid", "Cuboid: rest", "cuboid", manual=True))
             for b in boards:
                 self.steps.append(Step(f"b{b}.flat", f"b{b} flat press", "flat", b))
                 for p, name in enumerate(CHIP_NAMES):
@@ -367,7 +368,10 @@ class VerifyPanel(QtWidgets.QWidget):
         if gen != self._gen or self.running or row >= len(self.steps) or self.index != row - 1:
             return                     # Start over, a disconnect or the user moved on meanwhile
         self.step_list.setCurrentRow(row)
-        if self.steps[row].status == "pending":
+        step = self.steps[row]
+        if step.manual:
+            self.state_label.setText("Set up as described above, then press Start.")
+        elif step.status == "pending":
             self.start_step()
 
     # ------------------------------------------------------------ live data
@@ -500,6 +504,12 @@ class VerifyPanel(QtWidgets.QWidget):
         if step.kind == "flat":
             checks, measured = V.flat_press_checks(b, dB, noise, data.get("polarity_rest"))
             data.update(measured)
+            off = self.capture.reference_offset
+            if self.capture.reference is not None and \
+                    off > 0.03 * np.linalg.norm(self.capture.reference):
+                checks.append(V.Check("rest moved", V.INFO, f"before the press the field was "
+                                      f"{off:.0f} uT from the cuboid rest reading; if the cuboid "
+                                      "was reseated, rerun 'Cuboid: rest'", b))
         elif step.kind in ("mag", "pos"):
             source = "magnet" if step.kind == "mag" else "fingertip"
             if step.kind == "mag":

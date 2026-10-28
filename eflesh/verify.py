@@ -111,6 +111,8 @@ class PressCapture:
         self.baseline = None if baseline is None else np.asarray(baseline, float)
         self.reference = None if reference is None else np.asarray(reference, float)
         self.held = False                  # settling refused: still pressed / magnet near
+        self.reference_offset = 0.0        # uT between the accepted baseline and `reference`
+        self._held_since = None
         self._clear_since = None
         self._peak_total = 0.0
         self.result = None
@@ -145,10 +147,18 @@ class PressCapture:
         if not (w.std(axis=0) <= 4 * self.noise[:, None] + 3.0).all():
             return
         mean = w.mean(axis=0)
-        if self.reference is not None and \
-                np.linalg.norm(mean - self.reference) > 0.5 * self.threshold:
-            self.held = True
-            return
+        if self.reference is not None:
+            off = float(np.linalg.norm(mean - self.reference))
+            # A cuboid creeps or reseats by a few percent of its field; a hand
+            # held on it moves far more. Past 3 quiet seconds, take it anyway.
+            tol = max(0.5 * self.threshold, 0.03 * float(np.linalg.norm(self.reference)))
+            if off > tol:
+                if self._held_since is None:
+                    self._held_since = t
+                if t - self._held_since < 3.0:
+                    self.held = True
+                    return
+            self.reference_offset = off
         self.held = False
         self.baseline = mean
         self._window = []
@@ -274,15 +284,15 @@ def cuboid_checks(board: int, xyz: np.ndarray,
     low = mag[1:] < CUBOID_MIN_UT
     if low.all():
         note = (f"every arm reads under {CUBOID_MIN_UT:.0f} uT, which is a bare board; a seated "
-                "cuboid gives 700+ (alternating) or ~14 mT (aligned). Is the cuboid on? ")
+                "cuboid gives 700+ (alternating) or ~14 mT (aligned). Seat it and Retry. ")
     elif low.any():
         note = (f"{', '.join(CHIP_NAMES[i + 1] for i in np.where(low)[0])} under "
                 f"{CUBOID_MIN_UT:.0f} uT while other arms are higher -- cuboid off-centre or a "
                 "magnet missing? ")
     else:
         note = ""
-    checks = [Check("cuboid seated", WARN if low.any() else PASS,
-                    note + "resting |B| uT: " + _fmt(mag), board)]
+    status = FAIL if low.all() else WARN if low.any() else PASS
+    checks = [Check("cuboid seated", status, note + "resting |B| uT: " + _fmt(mag), board)]
     checks.append(still_check(board, xyz, np.full(MAGS_PER_FINGER, 3.0)
                               if noise_ut is None else np.asarray(noise_ut)))
     polarity = polarity_from_rest(mag) if not low.all() else "unclear"
