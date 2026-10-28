@@ -20,11 +20,13 @@ Board, bare (needs a small magnet for all but the first step)
 
 Cuboid seated
   rest        seated, and the magnet polarity the resting profile implies
-  flat press  every chip responds; the dBz sign pattern gives polarity again,
-              and the peaks become each chip's sensitivity
-  presses     only if the magnet steps were skipped: a fingertip over each
-              chip must move it most relative to its own sensitivity. The
-              centre responds ~3x less than the arms, so raw dB would not do.
+  flat press  every chip responds; the peaks and the dBz signs are recorded
+
+There is no fingertip version of the position check. The magnets sit on the
+corners and the chips on the axes, so a fingertip over the right chip moves
+the top-right magnet, which is as close to the top chip (~8 mm) as to the
+right one; on hardware this mapped presses to the wrong chip. Only a magnet
+held over a chip on the bare board isolates it.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -46,7 +48,6 @@ NOISE_WARN_LSB = 4.0       # above this something is wrong, not just unsettled
 STILL_MIN_UT = 20.0        # rest field may move this much (or 10x noise) across the window
 CUBOID_MIN_UT = 500.0      # bare board: ambient, 40-400 uT; seated: 700+ (alternating), ~14 mT (aligned)
 RESPONSE_MIN_SNR = 20.0    # flat-press peak over noise; build #1 measured 300-1000
-MAPPING_MARGIN = 1.25      # fingertip: winning chip over runner-up, both normalised
 MAGNET_MARGIN = 1.5        # magnet over a bare chip: ~5x expected at 5 mm
 AXIS_SPREAD_DEG = 45.0     # chips beside the magnet's axis see a tilted field
 AXIS_TOL_DEG = 30.0
@@ -349,28 +350,6 @@ def flat_press_checks(board: int, peak_dB: np.ndarray, noise_ut: np.ndarray,
     return checks, {"sensitivity_ut": mag.tolist()}
 
 
-def position_check(board: int, position: int, peak_dB: np.ndarray,
-                   sensitivity: np.ndarray) -> (Check, dict):
-    """A fingertip press meant for `position`; which chip moved most, relative to
-    how far a flat press moved it?"""
-    r = np.linalg.norm(peak_dB, axis=1) / np.maximum(sensitivity, 1.0)
-    order = np.argsort(r)[::-1]
-    top, second = int(order[0]), int(order[1])
-    margin = r[top] / max(r[second], 1e-9)
-    name = CHIP_NAMES[position]
-    if top != position:
-        status, detail = FAIL, (f"pressed {name}, but stream index {top} "
-                                f"({CHIP_NAMES[top]}) moved most")
-    elif margin < MAPPING_MARGIN:
-        status, detail = WARN, (f"{name} moved most, only {margin:.2f}x ahead of "
-                                f"{CHIP_NAMES[second]}; press smaller and more central")
-    else:
-        status, detail = PASS, f"{name} moved most, {margin:.1f}x ahead of {CHIP_NAMES[second]}"
-    detail += "  [relative response: " + _fmt(r, 2) + "]"
-    return Check(f"press {name}", status, detail, board), {
-        "responder": top, "margin": float(margin), "relative": r.tolist()}
-
-
 def magnet_position_check(board: int, position: int, dB: np.ndarray) -> (Check, dict):
     """The magnet held over `position` on a bare board: which chip moved most?"""
     mag = np.linalg.norm(dB, axis=1)
@@ -395,15 +374,16 @@ def mapping_summary(board: int, responders: Dict[int, int]) -> Check:
     """responders: position -> stream index that moved most."""
     if len(responders) < MAGS_PER_FINGER:
         missing = [CHIP_NAMES[p] for p in range(MAGS_PER_FINGER) if p not in responders]
-        return Check("position map", SKIP, f"not checked: {', '.join(missing)}", board)
+        return Check("position map", SKIP, f"not checked: {', '.join(missing)} -- needs the "
+                     "magnet steps on the bare board", board)
     if all(p == k for p, k in responders.items()):
         return Check("position map", PASS, "stream order is middle, left, right, top, bottom", board)
     table = ", ".join(f"{CHIP_NAMES[p]} -> index {k}" for p, k in sorted(responders.items()))
     if sorted(responders.values()) == list(range(MAGS_PER_FINGER)):
         return Check("position map", FAIL, f"stream order is permuted: {table}. Fix the "
                      "address order in eflesh_cmd_stream's orderAddresses().", board)
-    return Check("position map", FAIL, f"inconsistent: {table}. Repeat the presses "
-                 "with a smaller contact.", board)
+    return Check("position map", FAIL, f"inconsistent: {table}. Repeat with the magnet "
+                 "held right over each chip, about 5 mm up.", board)
 
 
 def axis_checks(board: int, right_dB: np.ndarray, top_dB: np.ndarray) -> (List[Check], dict):

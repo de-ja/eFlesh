@@ -39,7 +39,7 @@ COLORS = {V.PASS: "#3fb950", V.WARN: "#d29922", V.FAIL: "#f85149", V.INFO: PLOT_
 class Step:
     key: str
     title: str
-    kind: str                       # bare, mag, axis, cuboid, flat, pos
+    kind: str                       # bare, mag, axis, cuboid, flat
     board: Optional[int] = None
     position: Optional[int] = None
     side: str = ""                  # axis steps: right, top
@@ -214,9 +214,6 @@ class VerifyPanel(QtWidgets.QWidget):
             self.steps.append(Step("cuboid", "Cuboid: rest", "cuboid", manual=True))
             for b in boards:
                 self.steps.append(Step(f"b{b}.flat", f"b{b} flat press", "flat", b))
-                for p, name in enumerate(CHIP_NAMES):
-                    self.steps.append(Step(f"b{b}.pos{p}", f"b{b} press {name} (no-magnet fallback)",
-                                           "pos", b, p))
         self.step_list.blockSignals(True)
         self.step_list.clear()
         for s in self.steps:
@@ -278,12 +275,8 @@ class VerifyPanel(QtWidgets.QWidget):
         if step.kind == "cuboid":
             return ("<b>Seat the cuboid</b> on each board and leave it untouched. "
                     f"Measures for {REST_S:.0f} s.")
-        if step.kind == "flat":
-            return (f"Press the whole top face of {b} <b>flat with your palm</b>, "
-                    "hold for a moment, then release.")
-        return (f"Only needed if you skipped the magnet steps. Press <b>one fingertip</b> on {b} "
-                f"directly over the <b>{CHIP_NAMES[step.position].upper()}</b> chip (ringed "
-                "below), then release. A small, firm contact works best.")
+        return (f"Press the whole top face of {b} <b>flat with your palm</b>, "
+                "hold for a moment, then release.")
 
     def start_step(self):
         dev = self._dev()
@@ -295,10 +288,6 @@ class VerifyPanel(QtWidgets.QWidget):
         step.status = "running"
         self._refresh_list()
         self._last_t = time.time()
-        if step.kind == "pos" and self._magnet_mapped(step.board):
-            self._finish(step, [V.Check(f"press {CHIP_NAMES[step.position]}", V.INFO,
-                                        "not needed: mapped with the magnet", step.board)])
-            return
         if step.kind in RESTS:
             self._stats_ok = False
             if step.kind == "bare":
@@ -337,7 +326,7 @@ class VerifyPanel(QtWidgets.QWidget):
         self.capture = None
         step = self.steps[self.index]
         data = self._board_data(step.board)
-        if step.kind in ("mag", "pos") and data.get("positions"):
+        if step.kind == "mag" and data.get("positions"):
             # A skipped position must not keep an earlier press in the map.
             data["positions"].pop(CHIP_NAMES[step.position], None)
             self._update_map(step.board)
@@ -415,7 +404,7 @@ class VerifyPanel(QtWidgets.QWidget):
             return "Hands off, taking a baseline…"
         if state == "clearing":
             return "Take the magnet away…"
-        act = {"flat": "press flat with your palm", "pos": "press over the ringed chip",
+        act = {"flat": "press flat with your palm",
                "mag": "bring the magnet over the ringed chip",
                "axis": f"bring the magnet in beyond the {step.side} edge"}[step.kind]
         if state == "waiting":
@@ -429,17 +418,15 @@ class VerifyPanel(QtWidgets.QWidget):
         if step is None:
             return
         mag = np.linalg.norm(dB, axis=1)
-        sens = self._board_data(step.board).get("sensitivity_ut")
-        if step.kind in ("flat", "pos") and sens:
-            ref = 0.5 * np.array(sens)
-        else:
-            ref = np.full(MAGS_PER_FINGER, 300.0)
+        # Raw response against the strongest chip, never scaled per chip: dividing
+        # by a chip's own flat-press response made the weakest chip look loudest.
+        ref = np.full(MAGS_PER_FINGER, max(float(mag.max()), 300.0))
         vectors = None
         if step.kind == "axis" and mag.max() > 0:
             v = to_pad_frame(dB)
             vectors = v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
             vectors *= (mag > 5)[:, None]
-        target = step.position if step.kind in ("pos", "mag") else None
+        target = step.position if step.kind == "mag" else None
         self.diagram.show_state(mag / np.maximum(ref, 1.0), target, vectors, step.side)
 
     def _board_data(self, b):
@@ -451,11 +438,6 @@ class VerifyPanel(QtWidgets.QWidget):
         if positions:
             responders = {CHIP_NAMES.index(n): m["responder"] for n, m in positions.items()}
             self.report.set_step(f"b{b}.map", [V.mapping_summary(b, responders)])
-
-    def _magnet_mapped(self, b):
-        checks = self.report.steps.get(f"b{b}.map", [])
-        return bool(checks) and checks[0].status == V.PASS and \
-            self._board_data(b).get("map_source") == "magnet"
 
     # ------------------------------------------------------------ results
 
@@ -510,19 +492,9 @@ class VerifyPanel(QtWidgets.QWidget):
                 checks.append(V.Check("rest moved", V.INFO, f"before the press the field was "
                                       f"{off:.0f} uT from the cuboid rest reading; if the cuboid "
                                       "was reseated, rerun 'Cuboid: rest'", b))
-        elif step.kind in ("mag", "pos"):
-            source = "magnet" if step.kind == "mag" else "fingertip"
-            if step.kind == "mag":
-                check, measured = V.magnet_position_check(b, step.position, dB)
-            else:
-                sens = np.array(data.get("sensitivity_ut", [1.0] * MAGS_PER_FINGER))
-                check, measured = V.position_check(b, step.position, dB, sens)
-                if "sensitivity_ut" not in data:
-                    check.detail += " (no flat press yet, so not normalised)"
-            if data.get("map_source") != source:          # a fresh map, not a mix of both
-                data["positions"] = {}
-                data["map_source"] = source
-            data["positions"][CHIP_NAMES[step.position]] = measured
+        elif step.kind == "mag":
+            check, measured = V.magnet_position_check(b, step.position, dB)
+            data.setdefault("positions", {})[CHIP_NAMES[step.position]] = measured
             checks = [check]
             self.report.steps.setdefault(step.key, [])     # keep the map after the presses
             self._update_map(b)

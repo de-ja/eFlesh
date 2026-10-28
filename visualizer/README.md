@@ -49,8 +49,11 @@ magnet for the board stage.
    position map); then the magnet held level beyond the right edge and the top
    edge, which checks every chip's rotation and the frame's handedness.
 2. **Cuboid seated**: seated and resting polarity, then a flat palm press that
-   every chip must respond to. If the magnet steps were skipped, a fingertip
-   press over each chip maps positions instead.
+   every chip must respond to.
+
+Positions are only mapped with the magnet on the bare board. A fingertip on
+the cuboid cannot isolate a chip: the magnets sit on the corners, so a press
+over one arm chip moves magnets that its neighbours see just as strongly.
 
 Each step starts the next one when it passes; Retry or Skip any step. The
 verdict reads *incomplete* while steps are skipped or not run. **Save report**
